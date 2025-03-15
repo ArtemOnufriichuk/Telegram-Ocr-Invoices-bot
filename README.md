@@ -1,4 +1,4 @@
-# Construction Project Receipt Parser
+# Telegram Ocr Invoices bot
 
 Приложение для автоматического извлечения и структурирования данных из документов строительных проектов с помощью искусственного интеллекта.
 
@@ -14,7 +14,7 @@
 ## Технологии
 
 - Node.js & TypeScript
-- Mistral AI API для OCR и анализа текста
+- Mistral AI API для OCR и анализа текста https://console.mistral.ai/home
 - Telegram Bot API
 - XLSX для работы с Excel-файлами
 
