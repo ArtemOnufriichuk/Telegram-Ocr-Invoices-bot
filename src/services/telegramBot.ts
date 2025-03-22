@@ -15,22 +15,44 @@ async function downloadFile(filePath: string, destination: string): Promise<void
 	console.log('File downloaded successfully');
 }
 
-async function sendProcessingResult(chatId: number, result: ProcessingResult): Promise<void> {
+async function sendProcessingResult(chatId: number, result: ProcessingResult, originalFileName: string): Promise<void> {
 	if (result.success && result.data) {
-		const message = JSON.stringify(result.data, null, 2);
-		await bot.sendMessage(chatId, message);
+		// Создаем имя файла на основе имени исходного файла и данных поставщика
+		const supplier = result.data.supplier ? result.data.supplier.replace(/[^\w\s]/gi, '_') : 'unknown';
+		const jsonFileName = `${path.parse(originalFileName).name}_${supplier}_${Date.now()}.json`;
+		const jsonFilePath = path.join(config.paths.uploads, jsonFileName);
+
+		// Сохраняем JSON в файл
+		fs.writeFileSync(jsonFilePath, JSON.stringify(result.data, null, 2));
+
+		// Отправляем сообщение с результатом
+		const messageSummary =
+			`✅ Документ успешно обработан!\n\n` +
+			`📋 Поставщик: ${result.data.supplier || 'Не указан'}\n` +
+			`📅 Дата: ${result.data.invoice_date || 'Не указана'}\n` +
+			`📦 Товаров: ${result.data.items?.length || 0}`;
+
+		await bot.sendMessage(chatId, messageSummary);
+
+		// Отправляем файл
+		await bot.sendDocument(chatId, jsonFilePath, {
+			caption: 'Результат обработки в формате JSON',
+		});
+
+		// Удаляем временный файл
+		fs.unlinkSync(jsonFilePath);
 		console.log(`Successfully processed document for chat ${chatId}`);
 	} else {
-		const errorMessage = `Error: ${result.error || 'Unknown error occurred'}`;
+		const errorMessage = `❌ Ошибка: ${result.error || 'Произошла неизвестная ошибка'}`;
 		await bot.sendMessage(chatId, errorMessage);
-		console.error(`Error processing document for chat ${chatId}: ${errorMessage}`);
+		console.error(`Error processing document for chat ${chatId}: ${result.error}`);
 	}
 }
 
 function setupHandlers(): void {
 	bot.onText(/\/start/, (msg) => {
 		const chatId = msg.chat.id;
-		bot.sendMessage(chatId, 'Welcome! Please send me a document to process.');
+		bot.sendMessage(chatId, '👋 Добро пожаловать! Отправьте мне документ или фото для обработки.');
 		console.log(`New user started bot: ${chatId}`);
 	});
 
@@ -39,12 +61,15 @@ function setupHandlers(): void {
 		const fileId = msg.document?.file_id;
 
 		if (!fileId || !msg.document) {
-			bot.sendMessage(chatId, 'Please send a valid document.');
+			bot.sendMessage(chatId, '❌ Пожалуйста, отправьте корректный документ.');
 			console.warn(`Invalid document received from chat ${chatId}`);
 			return;
 		}
 
 		try {
+			// Отправляем статус о получении документа
+			const statusMessage = await bot.sendMessage(chatId, '📥 Получен документ. Начинаю обработку...');
+
 			const file = await bot.getFile(fileId);
 			const filePath = path.join(config.paths.uploads, msg.document.file_name || 'document');
 
@@ -54,21 +79,39 @@ function setupHandlers(): void {
 
 			console.log(`Processing document from chat ${chatId}: ${msg.document.file_name}`);
 
+			// Обновляем статус - скачивание
+			await bot.editMessageText('⬇️ Скачиваю документ...', {
+				chat_id: chatId,
+				message_id: statusMessage.message_id,
+			});
+
 			// Download file
 			await downloadFile(file.file_path, filePath);
+
+			// Обновляем статус - обработка
+			await bot.editMessageText('🔍 Анализирую документ...', {
+				chat_id: chatId,
+				message_id: statusMessage.message_id,
+			});
 
 			// Process document with telegramFilePath
 			const result = await processDocument(filePath, file.file_path);
 
+			// Обновляем статус - завершено
+			await bot.editMessageText('✅ Обработка завершена!', {
+				chat_id: chatId,
+				message_id: statusMessage.message_id,
+			});
+
 			// Send result
-			await sendProcessingResult(chatId, result);
+			await sendProcessingResult(chatId, result, msg.document.file_name || 'document');
 
 			// Clean up
 			fs.unlinkSync(filePath);
 			console.log(`Cleaned up file: ${filePath}`);
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-			bot.sendMessage(chatId, 'Error processing document. Please try again.');
+			bot.sendMessage(chatId, '❌ Ошибка обработки документа. Пожалуйста, попробуйте снова.');
 			console.error(`Error processing document from chat ${chatId}: ${errorMessage}`);
 		}
 	});
@@ -79,12 +122,15 @@ function setupHandlers(): void {
 		const photos = msg.photo;
 
 		if (!photos || photos.length === 0) {
-			bot.sendMessage(chatId, 'Please send a valid photo.');
+			bot.sendMessage(chatId, '❌ Пожалуйста, отправьте корректное фото.');
 			console.warn(`Invalid photo received from chat ${chatId}`);
 			return;
 		}
 
 		try {
+			// Отправляем статус о получении фото
+			const statusMessage = await bot.sendMessage(chatId, '📸 Получено фото. Начинаю обработку...');
+
 			// Берем фото с наилучшим качеством (последнее в массиве)
 			const fileId = photos[photos.length - 1].file_id;
 			const file = await bot.getFile(fileId);
@@ -98,21 +144,39 @@ function setupHandlers(): void {
 
 			console.log(`Processing photo from chat ${chatId}`);
 
+			// Обновляем статус - скачивание
+			await bot.editMessageText('⬇️ Скачиваю фото...', {
+				chat_id: chatId,
+				message_id: statusMessage.message_id,
+			});
+
 			// Download file
 			await downloadFile(file.file_path, filePath);
+
+			// Обновляем статус - OCR
+			await bot.editMessageText('👁️ Извлекаю текст из изображения...', {
+				chat_id: chatId,
+				message_id: statusMessage.message_id,
+			});
 
 			// Process photo with telegramFilePath
 			const result = await processDocument(filePath, file.file_path);
 
+			// Обновляем статус - завершено
+			await bot.editMessageText('✅ Обработка завершена!', {
+				chat_id: chatId,
+				message_id: statusMessage.message_id,
+			});
+
 			// Send result
-			await sendProcessingResult(chatId, result);
+			await sendProcessingResult(chatId, result, fileName);
 
 			// Clean up
 			fs.unlinkSync(filePath);
 			console.log(`Cleaned up file: ${filePath}`);
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-			bot.sendMessage(chatId, 'Error processing photo. Please try again.');
+			bot.sendMessage(chatId, '❌ Ошибка обработки фото. Пожалуйста, попробуйте снова.');
 			console.error(`Error processing photo from chat ${chatId}: ${errorMessage}`);
 		}
 	});

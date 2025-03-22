@@ -1,18 +1,25 @@
 export interface DocumentItem {
-	name: string;
-	article: string | null;
-	quantity: number;
-	unit: string;
-	price_no_pdv: number;
-	price_with_pdv: number;
-	total: number;
+	name: string; // "Кирпич"
+	article: string | null; // "1234567890 || КР 2.04 || ZST10230-04079"
+	quantity: number; // 1000
+	unit: string; // "шт"
+	price_no_pdv: number; // 100
+	price_with_pdv: number; // 110
+	total_no_pdv: number; // 10000
+	total_with_pdv: number; // 11000
 }
 
 export interface ParsedDocument {
-	supplier: string;
+	invoice_number: string; // 1234
+	invoice_date: string; // DD.MM.YYYY
+	edrpou: string; // 1234567890
+	ipn: string; // 1234567890
+	supplier: string; // "ООО 'Стройматериалы'"
+	isPriceWithPdv: boolean; // true
 	items: DocumentItem[];
-	total_pdv: number;
-	total_with_pdv: number;
+	total_no_pdv: number; // 10000
+	total_pdv: number; // 1000
+	total_with_pdv: number; // 11000
 }
 
 export interface ProcessingResult {

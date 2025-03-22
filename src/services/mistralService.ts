@@ -54,6 +54,9 @@ async function processImageFile(filePath: string, telegramFilePath?: string): Pr
 
 	const prompt = createPrompt(extractedText);
 	const chatResponse = await sendToMistralChatAPI(prompt);
+
+	console.log('Получен ответ от Chat API:', chatResponse.choices[0]?.message?.content);
+
 	return chatResponse.choices[0]?.message?.content || '';
 }
 
@@ -127,22 +130,36 @@ function extractTextFromOCRResult(ocrResult: OCRApiResponse): string {
 // Формирование промпта для Chat API
 function createPrompt(fileContent: string): string {
 	return `
-Пожалуйста, прочитай текст ниже и определи в нём следующие данные:
+Пожалуйста, прочитай текст ниже. Он может содержать несколько языков (укр, рус, англ), в документе может быть пометка о наличии цены с ПДВ (НДС) или без. Определи в нём следующие данные:
 
-supplier — название поставщика (контрагента).
-total — итоговая сумма.
-total_pdv — общая сумма пдв.
-total_with_pdv — общая сумма c пдв.
+ОЧЕНЬ ВАЖНО! При определении поля isPriceWithPdv (указаны ли цены с ПДВ/НДС):
+1. Если в таблице есть колонка "Цiна з ПДВ", "Сума з ПДВ" или подобные - значит цены указаны с ПДВ
+2. Если рядом с ценой есть пометка "в т.ч. ПДВ" - значит цены указаны с ПДВ
+3. Если в документе ниже есть строка "У тому числi ПДВ" с суммой - скорее всего цены указаны с ПДВ
+4. Если вообще нет упоминания ПДВ/НДС - считай, что цены без ПДВ
+
+ОБЯЗАТЕЛЬНО! Если цены указаны и с ПДВ и без, то надо заполнить все поля ..._no_pdv и ..._with_pdv.
+
+invoice_number — номер (№) счета. /1234/
+invoice_date — дата счета. /DD.MM.YYYY/
+edrpou — едрпоу поставщика. /1234567890/
+ipn — ипн поставщика. /1234567890/
+supplier — название поставщика (контрагента). /ООО 'Стройматериалы'/
+isPriceWithPdv — какая цена указана в items с ПДВ (НДС) или без. /true/false/
+total_no_pdv — общая сумма без ПДВ. /10000/
+total_pdv — общая сумма ПДВ. /1000/
+total_with_pdv — общая сумма c ПДВ. /11000/
 
 items — список позиций (товаров, услуг или работ), где у каждой позиции нужно указать:
-name — наименование,
-article — артикул,
-quantity — количество (числовое значение),
-unit — единица измерения,
-price_no_pdv — цена без пдв (числовое значение),
-price_with_pdv — цена с пдв (числовое значение),
+name — наименование, /Кирпич/
+article — артикул, /1234567890 || КР 2.04 || ZST10230-04079/ (может использовать буквы нескольких языков)
+quantity — количество (числовое значение), /1000/
+unit — единица измерения, /шт/
+price_no_pdv — цена без ПДВ (числовое значение), /100/
+price_with_pdv — цена с ПДВ (числовое значение), /110/
+total_no_pdv — итоговая сумма без ПДВ. /10000/
+total_with_pdv — итоговая сумма с ПДВ. /11000/
 
-Важно: все числовые значения должны быть именно числами, а не строками!
 ОБЯЗАТЕЛЬНО! Все количества, цены и суммы должны быть числовыми значениями!
 
 Если какой-то информации не хватает, укажи null.
@@ -151,20 +168,27 @@ price_with_pdv — цена с пдв (числовое значение),
 
 Вот пример ожидаемого формата ответа:
 {
-  "supplier": "ООО Компания",
-  "items": [
-    {
-      "name": "Товар 1",
-      "article": "ABC123",
-      "quantity": 10,
-      "unit": "шт",
-      "price_no_pdv": 100.5,
-      "price_with_pdv": 120.6,
-      "total": 1206
-    }
-  ],
-  "total_pdv": 201,
-  "total_with_pdv": 1206
+	"invoice_number": "1234567890",
+	"invoice_date": "01.01.2021",
+	"edrpou": "1234567890",
+	"ipn": "1234567890",
+	"supplier": "ООО 'Стройматериалы'",
+	"isPriceWithPdv": true | false,
+	"items": [
+		{
+			"name": "Кирпич" | "Кирпич 2.04" | "Кирпич 2.04 079" | null,
+			"article": "1234567890" | "КР 2.04" | "ZST10230-04079" | null,
+			"quantity": 1000 | null,
+			"unit": "шт",
+			"price_no_pdv": 100 | null,
+			"price_with_pdv": 110 | null,
+			"total_no_pdv": 10000 | null,
+			"total_with_pdv": 11000 | null
+		}	
+	],
+	"total_no_pdv": 10000 | null,
+	"total_pdv": 1000 | null,
+	"total_with_pdv": 11000 | null
 }
 
 Вот содержание документа:
@@ -251,19 +275,32 @@ function parseJSONResponse(content: string): ParsedDocument {
 		// Обрабатываем items
 		const items = processItems(parsedJson.items || []);
 
-		// Обрабатываем числовые значения
-		const total_pdv = convertToNumber(parsedJson.total_pdv);
-		const total_with_pdv = convertToNumber(parsedJson.total_with_pdv);
-
 		return {
+			invoice_number: parsedJson.invoice_number || '',
+			invoice_date: parsedJson.invoice_date || '',
+			edrpou: parsedJson.edrpou || '',
+			ipn: parsedJson.ipn || '',
 			supplier: parsedJson.supplier || '',
+			isPriceWithPdv: parsedJson.isPriceWithPdv || false,
 			items,
-			total_pdv,
-			total_with_pdv,
+			total_no_pdv: convertToNumber(parsedJson.total_no_pdv),
+			total_pdv: convertToNumber(parsedJson.total_pdv),
+			total_with_pdv: convertToNumber(parsedJson.total_with_pdv),
 		};
 	} catch (error) {
 		console.error(`Ошибка при парсинге ответа: ${error instanceof Error ? error.message : 'Неизвестная ошибка'}`);
-		return { supplier: '', items: [], total_pdv: 0, total_with_pdv: 0 };
+		return {
+			invoice_number: '',
+			invoice_date: '',
+			edrpou: '',
+			ipn: '',
+			supplier: '',
+			isPriceWithPdv: false,
+			items: [],
+			total_no_pdv: 0,
+			total_pdv: 0,
+			total_with_pdv: 0,
+		};
 	}
 }
 
@@ -278,7 +315,8 @@ function processItems(items: any[]): DocumentItem[] {
 		unit: item.unit || '',
 		price_no_pdv: convertToNumber(item.price_no_pdv),
 		price_with_pdv: convertToNumber(item.price_with_pdv),
-		total: convertToNumber(item.total),
+		total_no_pdv: convertToNumber(item.total_no_pdv),
+		total_with_pdv: convertToNumber(item.total_with_pdv),
 	}));
 }
 
