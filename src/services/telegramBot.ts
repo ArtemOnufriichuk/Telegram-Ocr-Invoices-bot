@@ -4,6 +4,7 @@ import { processDocument } from './mistralService';
 import { ProcessingResult } from '../types/types';
 import path from 'path';
 import fs from 'fs';
+import * as XLSX from 'xlsx';
 
 let bot: TelegramBot;
 
@@ -15,32 +16,141 @@ async function downloadFile(filePath: string, destination: string): Promise<void
 	console.log('File downloaded successfully');
 }
 
+// Функция для создания Excel файла из данных ParsedDocument
+function createExcelFile(data: any, filePath: string): void {
+	try {
+		// Создаем рабочую книгу
+		const workbook = XLSX.utils.book_new();
+
+		// Создаем данные для единого листа
+		const sheetData: any[][] = [];
+
+		// Добавляем заголовок с информацией о документе
+		sheetData.push(['ИНФОРМАЦИЯ О ДОКУМЕНТЕ']);
+		sheetData.push([]);
+
+		// Добавляем основную информацию
+		sheetData.push(['Номер счета', data.invoice_number || '']);
+		sheetData.push(['Дата', data.invoice_date || '']);
+		sheetData.push(['ЕДРПОУ', data.edrpou || '']);
+		sheetData.push(['ИПН', data.ipn || '']);
+		sheetData.push(['Поставщик', data.supplier || '']);
+		sheetData.push(['Цены с НДС', data.isPriceWithPdv ? 'Да' : 'Нет']);
+
+		// Добавляем пустую строку для разделения
+		sheetData.push([]);
+		sheetData.push([]);
+
+		// Добавляем заголовок раздела товаров
+		sheetData.push(['СПИСОК ТОВАРОВ']);
+		sheetData.push([]);
+
+		// Заголовки для таблицы товаров
+		const itemsHeaders = ['№', 'Наименование', 'Артикул', 'Количество', 'Ед. изм.', 'Цена без НДС', 'Цена с НДС', 'Сумма без НДС', 'Сумма с НДС'];
+		sheetData.push(itemsHeaders);
+
+		// Добавляем данные товаров
+		if (data.items && data.items.length > 0) {
+			data.items.forEach((item: any, index: number) => {
+				sheetData.push([
+					index + 1, // Порядковый номер
+					item.name || '',
+					item.article || '',
+					item.quantity || 0,
+					item.unit || '',
+					item.price_no_pdv || 0,
+					item.price_with_pdv || 0,
+					item.total_no_pdv || 0,
+					item.total_with_pdv || 0,
+				]);
+			});
+		}
+
+		// Добавляем пустую строку для разделения
+		sheetData.push([]);
+
+		// Добавляем итоговые суммы внизу
+		sheetData.push(['', '', '', '', '', '', 'ИТОГО:', data.total_no_pdv || 0, data.total_with_pdv || 0]);
+		sheetData.push(['', '', '', '', '', '', 'НДС:', data.total_pdv || 0, '']);
+
+		// Создаем лист
+		const sheet = XLSX.utils.aoa_to_sheet(sheetData);
+
+		// Настраиваем стили (ширину столбцов)
+		const colWidths = [
+			{ wch: 5 }, // №
+			{ wch: 40 }, // Наименование
+			{ wch: 15 }, // Артикул
+			{ wch: 10 }, // Количество
+			{ wch: 10 }, // Ед. изм.
+			{ wch: 12 }, // Цена без НДС
+			{ wch: 12 }, // Цена с НДС
+			{ wch: 12 }, // Сумма без НДС
+			{ wch: 12 }, // Сумма с НДС
+		];
+
+		// Применяем ширину столбцов
+		sheet['!cols'] = colWidths;
+
+		// Объединяем ячейки для заголовков
+		if (!sheet['!merges']) sheet['!merges'] = [];
+		sheet['!merges'].push(
+			{ s: { r: 0, c: 0 }, e: { r: 0, c: 8 } }, // Заголовок информации
+			{ s: { r: 8, c: 0 }, e: { r: 8, c: 8 } }, // Заголовок товаров
+		);
+
+		// Добавляем лист в книгу
+		XLSX.utils.book_append_sheet(workbook, sheet, 'Документ');
+
+		// Записываем файл
+		XLSX.writeFile(workbook, filePath);
+		console.log(`Excel file created: ${filePath}`);
+	} catch (error) {
+		console.error(`Error creating Excel file: ${error instanceof Error ? error.message : 'Unknown error'}`);
+		throw new Error('Failed to create Excel file');
+	}
+}
+
 async function sendProcessingResult(chatId: number, result: ProcessingResult, originalFileName: string): Promise<void> {
 	if (result.success && result.data) {
 		// Создаем имя файла на основе имени исходного файла и данных поставщика
 		const supplier = result.data.supplier ? result.data.supplier.replace(/[^\w\s]/gi, '_') : 'unknown';
-		const jsonFileName = `${path.parse(originalFileName).name}_${supplier}_${Date.now()}.json`;
+		const baseName = `${path.parse(originalFileName).name}_${supplier}_${Date.now()}`;
+		const jsonFileName = `${baseName}.json`;
+		const xlsxFileName = `${baseName}.xlsx`;
 		const jsonFilePath = path.join(config.paths.uploads, jsonFileName);
+		const xlsxFilePath = path.join(config.paths.uploads, xlsxFileName);
 
 		// Сохраняем JSON в файл
 		fs.writeFileSync(jsonFilePath, JSON.stringify(result.data, null, 2));
+
+		// Создаем Excel файл
+		createExcelFile(result.data, xlsxFilePath);
 
 		// Отправляем сообщение с результатом
 		const messageSummary =
 			`✅ Документ успешно обработан!\n\n` +
 			`📋 Поставщик: ${result.data.supplier || 'Не указан'}\n` +
 			`📅 Дата: ${result.data.invoice_date || 'Не указана'}\n` +
-			`📦 Товаров: ${result.data.items?.length || 0}`;
+			`📦 Товаров: ${result.data.items?.length || 0}` +
+			`\n\n🔍 Подробности в файле JSON и Excel` +
+			`\n\n JSON: ${JSON.stringify(result.data, null, 2)}`;
 
 		await bot.sendMessage(chatId, messageSummary);
 
-		// Отправляем файл
+		// Отправляем JSON файл
 		await bot.sendDocument(chatId, jsonFilePath, {
 			caption: 'Результат обработки в формате JSON',
 		});
 
-		// Удаляем временный файл
+		// Отправляем Excel файл
+		await bot.sendDocument(chatId, xlsxFilePath, {
+			caption: 'Результат обработки в формате Excel',
+		});
+
+		// Удаляем временные файлы
 		fs.unlinkSync(jsonFilePath);
+		fs.unlinkSync(xlsxFilePath);
 		console.log(`Successfully processed document for chat ${chatId}`);
 	} else {
 		const errorMessage = `❌ Ошибка: ${result.error || 'Произошла неизвестная ошибка'}`;
