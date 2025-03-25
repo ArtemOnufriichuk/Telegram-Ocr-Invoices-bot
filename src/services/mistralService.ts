@@ -13,6 +13,8 @@ export async function processDocument(filePath: string, telegramFilePath?: strin
 		// Определяем тип документа и обрабатываем соответствующим образом
 		if (extension.match(/\.(jpg|jpeg|png|gif)$/i)) {
 			content = await processImageFile(filePath, telegramFilePath);
+		} else if (extension === '.pdf') {
+			content = await processPdfFile(filePath, telegramFilePath);
 		} else if (extension === '.xls' || extension === '.xlsx') {
 			content = await processExcelFile(filePath);
 		} else {
@@ -56,6 +58,35 @@ async function processImageFile(filePath: string, telegramFilePath?: string): Pr
 	const chatResponse = await sendToMistralChatAPI(prompt);
 
 	console.log('Получен ответ от Chat API:', chatResponse.choices[0]?.message?.content);
+
+	return chatResponse.choices[0]?.message?.content || '';
+}
+
+// Обработка PDF файлов через OCR API
+async function processPdfFile(filePath: string, telegramFilePath?: string): Promise<string> {
+	if (!telegramFilePath) {
+		throw new Error('Для PDF файлов необходим путь к файлу в Telegram');
+	}
+
+	console.log('Отправляем PDF в Mistral OCR API');
+	// Формируем URL для доступа к файлу через Telegram API
+	const fileUrl = `https://api.telegram.org/file/bot${config.telegram.token}/${telegramFilePath}`;
+
+	// Получаем текст из OCR API
+	const ocrResult = await sendToMistralOCRAPI(fileUrl);
+	console.log('OCR результат из PDF:', JSON.stringify(ocrResult, null, 2));
+
+	// Извлекаем текст из ответа OCR API
+	const extractedText = extractTextFromOCRResult(ocrResult);
+
+	// Анализируем извлеченный текст через Chat API
+	console.log('Получен текст из PDF, отправляем его для анализа в Chat API');
+	console.log('Извлеченный текст из PDF:', extractedText.substring(0, 200) + '...');
+
+	const prompt = createPrompt(extractedText);
+	const chatResponse = await sendToMistralChatAPI(prompt);
+
+	console.log('Получен ответ от Chat API для PDF:', chatResponse.choices[0]?.message?.content);
 
 	return chatResponse.choices[0]?.message?.content || '';
 }
@@ -105,23 +136,49 @@ function extractTextFromOCRResult(ocrResult: OCRApiResponse): string {
 
 		for (const page of ocrResult.pages) {
 			if (page.text) {
-				pageTexts.push(page.text);
-				console.log(`Извлечен текст из страницы ${page.index || 0}`);
+				pageTexts.push(`=== Страница ${page.page_number || page.index || 0} ===\n${page.text}`);
+				console.log(`Извлечен текст из страницы ${page.page_number || page.index || 0}`);
 			} else if (page.markdown) {
-				pageTexts.push(page.markdown);
-				console.log(`Извлечен markdown из страницы ${page.index || 0}`);
+				pageTexts.push(`=== Страница ${page.page_number || page.index || 0} ===\n${page.markdown}`);
+				console.log(`Извлечен markdown из страницы ${page.page_number || page.index || 0}`);
+			}
+
+			// Проверяем таблицы на странице
+			if (page.tables && Array.isArray(page.tables) && page.tables.length > 0) {
+				console.log(`Найдено ${page.tables.length} таблиц на странице ${page.page_number || page.index || 0}`);
+				pageTexts.push(`--- Таблицы на странице ${page.page_number || page.index || 0} ---\n${JSON.stringify(page.tables, null, 2)}`);
 			}
 		}
 
 		if (pageTexts.length > 0) {
-			extractedText = pageTexts.join('\n');
+			extractedText = pageTexts.join('\n\n');
 			console.log(`Извлечен текст из ${pageTexts.length} страниц`);
 		}
 	}
 
+	// Извлекаем текст из блоков (может содержать структурированный текст)
+	if (!extractedText && ocrResult.blocks && Array.isArray(ocrResult.blocks)) {
+		console.log(`Найдено ${ocrResult.blocks.length} текстовых блоков`);
+		const blockTexts = ocrResult.blocks
+			.filter((block) => block.text)
+			.map((block) => `[Блок на странице ${block.page_index || 0}]: ${block.text}`)
+			.join('\n\n');
+
+		if (blockTexts) {
+			extractedText = blockTexts;
+			console.log('Извлечен текст из блоков');
+		}
+	}
+
+	// Проверим наличие дополнительных полей, характерных для PDF
+	if (!extractedText && ocrResult.content) {
+		extractedText = typeof ocrResult.content === 'string' ? ocrResult.content : JSON.stringify(ocrResult.content);
+		console.log('Найден текст в поле content');
+	}
+
 	if (!extractedText) {
 		console.error('Не удалось извлечь текст из ответа OCR API:', JSON.stringify(ocrResult));
-		throw new Error('OCR API не вернул текст. Проверьте формат изображения.');
+		throw new Error('OCR API не вернул текст. Проверьте формат файла.');
 	}
 
 	return extractedText;
@@ -131,6 +188,14 @@ function extractTextFromOCRResult(ocrResult: OCRApiResponse): string {
 function createPrompt(fileContent: string): string {
 	return `
 Пожалуйста, прочитай текст ниже. Он может содержать несколько языков (укр, рус, англ), в документе может быть пометка о наличии цены с ПДВ (НДС) или без. Определи в нём следующие данные:
+
+Документ может быть в формате PDF с несколькими страницами. Разделители страниц могут выглядеть так: "=== Страница N ===".
+Ищи важную информацию по всему тексту. Счет и таблица могут быть на разных страницах.
+
+ОБРАТИ ВНИМАНИЕ! Документ может содержать таблицы в формате JSON (обозначены как "--- Таблицы на странице N ---"). 
+Если видишь таблицы в JSON формате, используй их для более точного извлечения данных о товарах.
+
+Тебе не надо менять цены и считать их, только переносить в правильные поля.
 
 ОЧЕНЬ ВАЖНО! При определении поля isPriceWithPdv (указаны ли цены с ПДВ/НДС):
 1. Если в таблице есть колонка "Цiна з ПДВ", "Сума з ПДВ" или подобные - значит цены указаны с ПДВ
@@ -236,9 +301,27 @@ async function sendToMistralChatAPI(prompt: string): Promise<MistralApiResponse>
 }
 
 // Отправка запроса в Mistral OCR API
-async function sendToMistralOCRAPI(imageUrl: string): Promise<OCRApiResponse> {
+async function sendToMistralOCRAPI(fileUrl: string): Promise<OCRApiResponse> {
 	console.log('Отправляем запрос в Mistral OCR API');
-	console.log(`Используем изображение по URL: ${imageUrl}`);
+	console.log(`Используем файл по URL: ${fileUrl}`);
+
+	// Определяем тип файла по расширению
+	const extension = path.extname(fileUrl).toLowerCase();
+	const fileType = extension === '.pdf' ? 'pdf' : 'image';
+	console.log(`Определен тип файла: ${fileType}`);
+
+	// Создаем правильную структуру документа в зависимости от типа файла
+	const documentPayload =
+		fileType === 'pdf'
+			? {
+					type: 'document_url',
+					document_url: fileUrl,
+					document_name: path.basename(fileUrl),
+			  }
+			: {
+					type: 'image_url',
+					image_url: fileUrl,
+			  };
 
 	const response = await fetch('https://api.mistral.ai/v1/ocr', {
 		method: 'POST',
@@ -248,10 +331,7 @@ async function sendToMistralOCRAPI(imageUrl: string): Promise<OCRApiResponse> {
 		},
 		body: JSON.stringify({
 			model: 'mistral-ocr-latest',
-			document: {
-				type: 'image_url',
-				image_url: imageUrl,
-			},
+			document: documentPayload,
 		}),
 	});
 
@@ -261,7 +341,7 @@ async function sendToMistralOCRAPI(imageUrl: string): Promise<OCRApiResponse> {
 	}
 
 	const data = await response.json();
-	console.log('Получен ответ от Mistral OCR API. Структура ответа:');
+	console.log(`Получен ответ от Mistral OCR API для ${fileType}. Структура ответа:`);
 	console.log(JSON.stringify(data, null, 2).substring(0, 1000) + '...');
 
 	return data as OCRApiResponse;

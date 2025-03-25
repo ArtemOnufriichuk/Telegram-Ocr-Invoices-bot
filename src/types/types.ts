@@ -66,6 +66,7 @@ export interface OCRApiResponse {
 	text?: string;
 	document?: {
 		text?: string;
+		name?: string;
 	};
 	pages?: Array<{
 		text?: string;
@@ -81,6 +82,14 @@ export interface OCRApiResponse {
 			dpi?: number;
 		};
 		markdown?: string;
+		tables?: Array<any>; // For table extraction
+	}>;
+	content?: string | any; // Дополнительное поле для PDF
+	blocks?: Array<{
+		type?: string;
+		text?: string;
+		page_index?: number;
+		bbox?: number[];
 	}>;
 	id?: string;
 	model?: string;
