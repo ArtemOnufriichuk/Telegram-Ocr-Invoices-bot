@@ -14,13 +14,18 @@
 	"author": "",
 	"license": "ISC",
 	"dependencies": {
+		"@anthropic-ai/sdk": "^0.23.0",
+		"@types/sharp": "^0.31.1",
 		"dotenv": "^16.4.7",
 		"node-telegram-bot-api": "^0.61.0",
+		"pdf-parse": "^1.1.1",
+		"sharp": "^0.33.5",
 		"xlsx": "^0.18.5"
 	},
 	"devDependencies": {
-		"@types/node": "^18.19.80",
+		"@types/node": "^18.19.84",
 		"@types/node-telegram-bot-api": "^0.61.11",
+		"@types/pdf-parse": "^1.1.4",
 		"ts-node": "^10.9.2",
 		"typescript": "^5.8.2"
 	}

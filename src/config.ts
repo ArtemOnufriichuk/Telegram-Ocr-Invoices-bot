@@ -6,7 +6,7 @@ import { Config } from './types/types';
 dotenv.config({ path: path.resolve(__dirname, '../.env') });
 
 // Validate required environment variables
-const requiredEnvVars = ['TELEGRAM_BOT_TOKEN', 'MISTRAL_API_KEY'];
+const requiredEnvVars = ['TELEGRAM_BOT_TOKEN', 'CLAUDE_API_KEY'];
 const missingEnvVars = requiredEnvVars.filter((varName) => !process.env[varName]);
 
 if (missingEnvVars.length > 0) {
@@ -17,9 +17,9 @@ export const config: Config = {
 	telegram: {
 		token: process.env.TELEGRAM_BOT_TOKEN!,
 	},
-	mistral: {
-		apiKey: process.env.MISTRAL_API_KEY!,
-		model: 'mistral-large-latest',
+	claude: {
+		apiKey: process.env.CLAUDE_API_KEY!,
+		model: 'claude-3-5-sonnet-20240620', // можно указать модель: claude-3-opus-20240229, claude-3-sonnet-20240229, claude-3-haiku-20240307 или claude-3-5-sonnet-20240620
 		maxTokens: 4000,
 	},
 	paths: {

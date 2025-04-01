@@ -1,12 +1,19 @@
 import TelegramBot from 'node-telegram-bot-api';
 import { config } from '../config';
-import { processDocument } from './mistralService';
+import { processDocumentWithFlexibleExtraction } from './claudeService';
 import { ProcessingResult } from '../types/types';
 import path from 'path';
 import fs from 'fs';
 import * as XLSX from 'xlsx';
+import process from 'process';
 
+// Глобальные переменные для состояния бота
 let bot: TelegramBot;
+let isRunning = false;
+let restartAttempts = 0;
+const MAX_RESTART_ATTEMPTS = 5;
+const RESTART_COOLDOWN = 10000; // 10 секунд между перезапусками
+const RESET_ATTEMPTS_AFTER = 60000 * 5; // Сбросить счетчик попыток после 5 минут успешной работы
 
 async function downloadFile(filePath: string, destination: string): Promise<void> {
 	console.log(`Downloading file from ${filePath} to ${destination}`);
@@ -111,11 +118,62 @@ function createExcelFile(data: any, filePath: string): void {
 	}
 }
 
+const MAX_MESSAGE_LENGTH = 4000;
+
+/**
+ * Нормализует имя файла для безопасного сохранения
+ * Удаляет недопустимые символы и ограничивает длину
+ */
+function normalizeFileName(fileName: string): string {
+	// Заменяем недопустимые символы
+	let normalized = fileName
+		// Исключаем недопустимые символы для имен файлов
+		.replace(/[\\/:*?"<>|]/g, '_')
+		// Заменяем множественные пробелы и подчеркивания одним подчеркиванием
+		.replace(/\s+/g, '_')
+		.replace(/_+/g, '_');
+
+	// Максимальная длина фрагмента имени файла (без учета расширения)
+	const MAX_PART_LENGTH = 30;
+
+	// Сокращаем части имени, если оно слишком длинное
+	const parts = normalized.split('_');
+	const shortenedParts = parts.map((part) => (part.length > MAX_PART_LENGTH ? part.substring(0, MAX_PART_LENGTH - 3) + '...' : part));
+
+	// Конечное имя файла: ограничиваем общую длину до 100 символов
+	normalized = shortenedParts.join('_');
+	if (normalized.length > 100) {
+		normalized = normalized.substring(0, 97) + '...';
+	}
+
+	// Если имя стало пустым, используем timestamp
+	return normalized || `file_${Date.now()}`;
+}
+
 async function sendProcessingResult(chatId: number, result: ProcessingResult, originalFileName: string): Promise<void> {
 	if (result.success && result.data) {
-		// Создаем имя файла на основе имени исходного файла и данных поставщика
-		const supplier = result.data.supplier ? result.data.supplier.replace(/[^\w\s]/gi, '_') : 'unknown';
-		const baseName = `${path.parse(originalFileName).name}_${supplier}_${Date.now()}`;
+		// Нормализуем данные для имени файла
+		const invoiceNumber = result.data.invoice_number ? normalizeFileName(`№ ${result.data.invoice_number}`) : '';
+
+		const invoiceDate = result.data.invoice_date ? normalizeFileName(` від ${result.data.invoice_date}`) : '';
+
+		const supplier = result.data.supplier ? normalizeFileName(result.data.supplier) : 'unknown';
+
+		// Создаем короткое имя файла
+		const originalBaseName = path.parse(originalFileName).name;
+		const timestamp = Date.now();
+
+		// Приоритет: номер счета + дата, если нет - используем имя исходного файла
+		let baseName = '';
+		if (invoiceNumber) {
+			baseName = `${invoiceNumber}${invoiceDate}_${supplier}_${timestamp}`;
+		} else {
+			baseName = `${normalizeFileName(originalBaseName)}_${supplier}_${timestamp}`;
+		}
+
+		// Нормализуем финальное имя файла
+		baseName = normalizeFileName(baseName);
+
 		const jsonFileName = `${baseName}.json`;
 		const xlsxFileName = `${baseName}.xlsx`;
 		const jsonFilePath = path.join(config.paths.uploads, jsonFileName);
@@ -133,10 +191,13 @@ async function sendProcessingResult(chatId: number, result: ProcessingResult, or
 			`📋 Поставщик: ${result.data.supplier || 'Не указан'}\n` +
 			`📅 Дата: ${result.data.invoice_date || 'Не указана'}\n` +
 			`📦 Товаров: ${result.data.items?.length || 0}` +
-			`\n\n🔍 Подробности в файле JSON и Excel` +
-			`\n\n JSON: ${JSON.stringify(result.data, null, 2)}`;
+			`\n\n🔍 Подробности в файле JSON и Excel`;
 
 		await bot.sendMessage(chatId, messageSummary);
+
+		// Отправляем JSON отдельным сообщением, разбивая на части при необходимости
+		const jsonString = JSON.stringify(result.data, null, 2);
+		await sendLargeMessage(chatId, `JSON: ${jsonString}`);
 
 		// Отправляем JSON файл
 		await bot.sendDocument(chatId, jsonFilePath, {
@@ -159,11 +220,103 @@ async function sendProcessingResult(chatId: number, result: ProcessingResult, or
 	}
 }
 
+// Функция для отправки больших сообщений по частям
+async function sendLargeMessage(chatId: number, message: string): Promise<void> {
+	// Максимальный размер сообщения в Telegram (4096 символов)
+
+	if (message.length <= MAX_MESSAGE_LENGTH) {
+		// Если сообщение короткое, отправляем его как есть
+		await bot.sendMessage(chatId, message);
+		return;
+	}
+
+	// Разбиваем на части, убедившись, что не разрываем JSON структуру
+	let parts = [];
+	let currentPart = '';
+
+	// Если это JSON, обрабатываем по-особому
+	if (message.startsWith('JSON:')) {
+		await bot.sendMessage(chatId, 'JSON результат слишком большой, отправляю по частям:');
+
+		// Отправляем только заголовок в первом сообщении
+		const jsonObj = JSON.parse(message.substring(5).trim());
+
+		// Отправляем основную информацию
+		const headerInfo = {
+			invoice_number: jsonObj.invoice_number,
+			invoice_date: jsonObj.invoice_date,
+			supplier: jsonObj.supplier,
+			edrpou: jsonObj.edrpou,
+			ipn: jsonObj.ipn,
+			isPriceWithPdv: jsonObj.isPriceWithPdv,
+			total_no_pdv: jsonObj.total_no_pdv,
+			total_pdv: jsonObj.total_pdv,
+			total_with_pdv: jsonObj.total_with_pdv,
+		};
+
+		await bot.sendMessage(chatId, `Основная информация:\n${JSON.stringify(headerInfo, null, 2)}`);
+
+		// Отправляем позиции товаров маленькими порциями
+		if (jsonObj.items && jsonObj.items.length > 0) {
+			await bot.sendMessage(chatId, `Найдено ${jsonObj.items.length} позиций товаров:`);
+
+			// Группируем товары по 5 штук
+			const itemGroups = [];
+			for (let i = 0; i < jsonObj.items.length; i += 5) {
+				itemGroups.push(jsonObj.items.slice(i, i + 5));
+			}
+
+			// Отправляем каждую группу отдельным сообщением
+			for (let i = 0; i < itemGroups.length; i++) {
+				const groupItems = itemGroups[i];
+				const groupMessage = `Товары ${i * 5 + 1}-${i * 5 + groupItems.length} из ${jsonObj.items.length}:\n${JSON.stringify(groupItems, null, 2)}`;
+				await bot.sendMessage(chatId, groupMessage);
+			}
+		} else {
+			await bot.sendMessage(chatId, `Товары не найдены`);
+		}
+	} else {
+		// Для обычного текста разбиваем на части по MAX_MESSAGE_LENGTH
+		let currentPosition = 0;
+		let counter = 1;
+
+		while (currentPosition < message.length) {
+			const part = message.substring(currentPosition, currentPosition + MAX_MESSAGE_LENGTH);
+			await bot.sendMessage(chatId, `Часть ${counter}/${Math.ceil(message.length / MAX_MESSAGE_LENGTH)}:\n${part}`);
+			currentPosition += MAX_MESSAGE_LENGTH;
+			counter++;
+		}
+	}
+}
+
 function setupHandlers(): void {
 	bot.onText(/\/start/, (msg) => {
 		const chatId = msg.chat.id;
-		bot.sendMessage(chatId, '👋 Добро пожаловать! Отправьте мне документ или фото для обработки.');
+		bot.sendMessage(
+			chatId,
+			`👋 Добро пожаловать! 
+
+Я помогу вам обработать счета и накладные, извлекая из них структурированные данные.
+
+Просто отправьте мне документ (PDF, Excel) или фото счета, и я автоматически извлеку всю важную информацию.
+
+ℹ️ Используйте /help для получения справки.`,
+		);
 		console.log(`New user started bot: ${chatId}`);
+	});
+
+	bot.onText(/\/help/, (msg) => {
+		const chatId = msg.chat.id;
+		const helpMessage = `
+📋 Доступные команды:
+
+/start - Начать работу с ботом
+/help - Показать эту справку
+
+Просто отправьте файл документа (PDF, Excel) или изображение счета/накладной для обработки.
+
+Бот использует продвинутый анализ с помощью нейросетей для распознавания любых форматов документов и таблиц.`;
+		bot.sendMessage(chatId, helpMessage);
 	});
 
 	bot.on('document', async (msg) => {
@@ -198,14 +351,18 @@ function setupHandlers(): void {
 			// Download file
 			await downloadFile(file.file_path, filePath);
 
-			// Обновляем статус - обработка
-			await bot.editMessageText('🔍 Анализирую документ...', {
+			// Обновляем статус - обработка с использованием гибкого режима
+			await bot.editMessageText('🧠 Анализирую документ...', {
 				chat_id: chatId,
 				message_id: statusMessage.message_id,
 			});
 
-			// Process document with telegramFilePath
-			const result = await processDocument(filePath, file.file_path);
+			console.log(`Processing document with flexible extraction for chat ${chatId}`);
+			console.log(`File type: ${path.extname(filePath).toLowerCase()}`);
+
+			// Используем только гибкий метод обработки
+			const result = await processDocumentWithFlexibleExtraction(filePath, file.file_path);
+			console.log(`Flexible processing completed for chat ${chatId}`);
 
 			// Обновляем статус - завершено
 			await bot.editMessageText('✅ Обработка завершена!', {
@@ -263,14 +420,18 @@ function setupHandlers(): void {
 			// Download file
 			await downloadFile(file.file_path, filePath);
 
-			// Обновляем статус - OCR
-			await bot.editMessageText('👁️ Извлекаю текст из изображения...', {
+			// Обновляем статус - обработка с использованием гибкого режима
+			await bot.editMessageText('🧠 Анализирую изображение...', {
 				chat_id: chatId,
 				message_id: statusMessage.message_id,
 			});
 
-			// Process photo with telegramFilePath
-			const result = await processDocument(filePath, file.file_path);
+			console.log(`Processing photo with flexible extraction from chat ${chatId}`);
+			console.log(`File type: ${path.extname(filePath).toLowerCase()}`);
+
+			// Используем только гибкий метод обработки
+			const result = await processDocumentWithFlexibleExtraction(filePath, file.file_path);
+			console.log(`Flexible processing completed for photo from chat ${chatId}`);
 
 			// Обновляем статус - завершено
 			await bot.editMessageText('✅ Обработка завершена!', {
@@ -292,8 +453,126 @@ function setupHandlers(): void {
 	});
 }
 
+/**
+ * Остановка бота и освобождение ресурсов
+ */
+function stopBot(): void {
+	if (bot && isRunning) {
+		try {
+			console.log('Stopping the Telegram bot...');
+			// Останавливаем поллинг и отключаем все обработчики
+			bot.stopPolling();
+			isRunning = false;
+			console.log('Telegram bot stopped successfully');
+		} catch (error) {
+			console.error('Error stopping bot:', error);
+		}
+	}
+}
+
+/**
+ * Запуск бота с настройкой всех обработчиков
+ */
+function initializeBot(): void {
+	try {
+		// Создаем нового бота
+		bot = new TelegramBot(config.telegram.token, { polling: true });
+
+		// Регистрируем обработчик ошибок поллинга
+		bot.on('polling_error', (error) => {
+			console.error('Telegram bot polling error:', error);
+
+			// Если ошибка критическая, перезапускаем бота
+			if (error && typeof error === 'object' && 'code' in error && (error.code === 'ETELEGRAM' || error.code === 'EFATAL')) {
+				console.log('Critical polling error detected, restarting bot...');
+				restartBot();
+			}
+		});
+
+		// Устанавливаем обработчики сообщений
+		setupHandlers();
+
+		isRunning = true;
+		console.log('Telegram bot initialized with flexible processing mode only');
+	} catch (error) {
+		console.error('Failed to initialize bot:', error);
+		throw error; // Пробрасываем ошибку для перезапуска
+	}
+}
+
+/**
+ * Перезапуск бота с учетом количества попыток
+ */
+function restartBot(): void {
+	restartAttempts++;
+	console.log(`Attempting to restart bot (attempt ${restartAttempts}/${MAX_RESTART_ATTEMPTS})...`);
+
+	if (restartAttempts > MAX_RESTART_ATTEMPTS) {
+		console.error(`Maximum restart attempts (${MAX_RESTART_ATTEMPTS}) reached. Giving up.`);
+		console.error('Bot requires manual intervention. Please check logs and restart the application.');
+		return;
+	}
+
+	// Останавливаем старого бота, если он существует
+	stopBot();
+
+	// Ждем некоторое время перед перезапуском
+	setTimeout(() => {
+		try {
+			console.log('Reinitializing bot...');
+			initializeBot();
+
+			// Сбрасываем счетчик попыток через некоторое время успешной работы
+			setTimeout(() => {
+				if (isRunning) {
+					console.log('Bot has been stable for a while, resetting restart attempts counter.');
+					restartAttempts = 0;
+				}
+			}, RESET_ATTEMPTS_AFTER);
+		} catch (error) {
+			console.error('Error during bot restart:', error);
+			// Рекурсивный вызов для следующей попытки
+			restartBot();
+		}
+	}, RESTART_COOLDOWN);
+}
+
+/**
+ * Основная функция запуска бота с механизмом отказоустойчивости
+ */
 export function startBot(): void {
-	bot = new TelegramBot(config.telegram.token, { polling: true });
-	setupHandlers();
-	console.log('Telegram bot started');
+	try {
+		// Регистрируем обработчики необработанных исключений
+		process.on('uncaughtException', (error) => {
+			console.error('Uncaught exception:', error);
+			if (isRunning) {
+				console.log('Attempting to restart bot due to uncaught exception...');
+				restartBot();
+			}
+		});
+
+		process.on('unhandledRejection', (reason, promise) => {
+			console.error('Unhandled promise rejection:', reason);
+			if (isRunning) {
+				console.log('Attempting to restart bot due to unhandled promise rejection...');
+				restartBot();
+			}
+		});
+
+		// Запускаем бота
+		initializeBot();
+
+		// Проверяем состояние бота каждые 5 минут
+		setInterval(() => {
+			if (!isRunning) {
+				console.log('Bot health check failed: Bot is not running. Attempting restart...');
+				restartBot();
+			} else {
+				console.log('Bot health check: OK');
+			}
+		}, 5 * 60 * 1000); // 5 минут
+	} catch (error) {
+		console.error('Failed to start bot:', error);
+		restartBot();
+	}
 }

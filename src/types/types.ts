@@ -28,31 +28,11 @@ export interface ProcessingResult {
 	error?: string;
 }
 
-export interface MistralApiResponse {
-	id: string;
-	object: string;
-	created: number;
-	model: string;
-	choices: {
-		index: number;
-		message: {
-			role: string;
-			content: string;
-		};
-		finish_reason: string;
-	}[];
-	usage: {
-		prompt_tokens: number;
-		completion_tokens: number;
-		total_tokens: number;
-	};
-}
-
 export interface Config {
 	telegram: {
 		token: string;
 	};
-	mistral: {
+	claude: {
 		apiKey: string;
 		model?: string;
 		maxTokens?: number;
@@ -60,44 +40,4 @@ export interface Config {
 	paths: {
 		uploads: string;
 	};
-}
-
-export interface OCRApiResponse {
-	text?: string;
-	document?: {
-		text?: string;
-		name?: string;
-	};
-	pages?: Array<{
-		text?: string;
-		page_number?: number;
-		index?: number;
-		images?: Array<{
-			base64?: string;
-			index?: number;
-		}>;
-		dimensions?: {
-			width?: number;
-			height?: number;
-			dpi?: number;
-		};
-		markdown?: string;
-		tables?: Array<any>; // For table extraction
-	}>;
-	content?: string | any; // Дополнительное поле для PDF
-	blocks?: Array<{
-		type?: string;
-		text?: string;
-		page_index?: number;
-		bbox?: number[];
-	}>;
-	id?: string;
-	model?: string;
-	object?: string;
-	usage?: {
-		prompt_tokens?: number;
-		completion_tokens?: number;
-		total_tokens?: number;
-	};
-	[key: string]: any; // Для других возможных полей
 }
