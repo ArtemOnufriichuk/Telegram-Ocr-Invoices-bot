@@ -118,8 +118,6 @@ function createExcelFile(data: any, filePath: string): void {
 	}
 }
 
-const MAX_MESSAGE_LENGTH = 4000;
-
 /**
  * Нормализует имя файла для безопасного сохранения
  * Удаляет недопустимые символы и ограничивает длину
@@ -195,10 +193,6 @@ async function sendProcessingResult(chatId: number, result: ProcessingResult, or
 
 		await bot.sendMessage(chatId, messageSummary);
 
-		// Отправляем JSON отдельным сообщением, разбивая на части при необходимости
-		const jsonString = JSON.stringify(result.data, null, 2);
-		await sendLargeMessage(chatId, `JSON: ${jsonString}`);
-
 		// Отправляем JSON файл
 		await bot.sendDocument(chatId, jsonFilePath, {
 			caption: 'Результат обработки в формате JSON',
@@ -217,75 +211,6 @@ async function sendProcessingResult(chatId: number, result: ProcessingResult, or
 		const errorMessage = `❌ Ошибка: ${result.error || 'Произошла неизвестная ошибка'}`;
 		await bot.sendMessage(chatId, errorMessage);
 		console.error(`Error processing document for chat ${chatId}: ${result.error}`);
-	}
-}
-
-// Функция для отправки больших сообщений по частям
-async function sendLargeMessage(chatId: number, message: string): Promise<void> {
-	// Максимальный размер сообщения в Telegram (4096 символов)
-
-	if (message.length <= MAX_MESSAGE_LENGTH) {
-		// Если сообщение короткое, отправляем его как есть
-		await bot.sendMessage(chatId, message);
-		return;
-	}
-
-	// Разбиваем на части, убедившись, что не разрываем JSON структуру
-	let parts = [];
-	let currentPart = '';
-
-	// Если это JSON, обрабатываем по-особому
-	if (message.startsWith('JSON:')) {
-		await bot.sendMessage(chatId, 'JSON результат слишком большой, отправляю по частям:');
-
-		// Отправляем только заголовок в первом сообщении
-		const jsonObj = JSON.parse(message.substring(5).trim());
-
-		// Отправляем основную информацию
-		const headerInfo = {
-			invoice_number: jsonObj.invoice_number,
-			invoice_date: jsonObj.invoice_date,
-			supplier: jsonObj.supplier,
-			edrpou: jsonObj.edrpou,
-			ipn: jsonObj.ipn,
-			isPriceWithPdv: jsonObj.isPriceWithPdv,
-			total_no_pdv: jsonObj.total_no_pdv,
-			total_pdv: jsonObj.total_pdv,
-			total_with_pdv: jsonObj.total_with_pdv,
-		};
-
-		await bot.sendMessage(chatId, `Основная информация:\n${JSON.stringify(headerInfo, null, 2)}`);
-
-		// Отправляем позиции товаров маленькими порциями
-		if (jsonObj.items && jsonObj.items.length > 0) {
-			await bot.sendMessage(chatId, `Найдено ${jsonObj.items.length} позиций товаров:`);
-
-			// Группируем товары по 5 штук
-			const itemGroups = [];
-			for (let i = 0; i < jsonObj.items.length; i += 5) {
-				itemGroups.push(jsonObj.items.slice(i, i + 5));
-			}
-
-			// Отправляем каждую группу отдельным сообщением
-			for (let i = 0; i < itemGroups.length; i++) {
-				const groupItems = itemGroups[i];
-				const groupMessage = `Товары ${i * 5 + 1}-${i * 5 + groupItems.length} из ${jsonObj.items.length}:\n${JSON.stringify(groupItems, null, 2)}`;
-				await bot.sendMessage(chatId, groupMessage);
-			}
-		} else {
-			await bot.sendMessage(chatId, `Товары не найдены`);
-		}
-	} else {
-		// Для обычного текста разбиваем на части по MAX_MESSAGE_LENGTH
-		let currentPosition = 0;
-		let counter = 1;
-
-		while (currentPosition < message.length) {
-			const part = message.substring(currentPosition, currentPosition + MAX_MESSAGE_LENGTH);
-			await bot.sendMessage(chatId, `Часть ${counter}/${Math.ceil(message.length / MAX_MESSAGE_LENGTH)}:\n${part}`);
-			currentPosition += MAX_MESSAGE_LENGTH;
-			counter++;
-		}
 	}
 }
 
