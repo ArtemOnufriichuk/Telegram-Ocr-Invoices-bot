@@ -148,6 +148,31 @@ function normalizeFileName(fileName: string): string {
 	return normalized || `file_${Date.now()}`;
 }
 
+/**
+ * Безопасно удаляет файл с проверкой существования и использованием задержки
+ * Предотвращает ошибки EPERM при удалении файлов, которые всё ещё используются
+ */
+function safeDeleteFile(filePath: string): void {
+	try {
+		// Проверяем существование файла перед удалением
+		if (fs.existsSync(filePath)) {
+			// Добавляем небольшую задержку для завершения всех операций с файлом
+			setTimeout(() => {
+				try {
+					fs.unlinkSync(filePath);
+					console.log(`Cleaned up file: ${filePath}`);
+				} catch (error) {
+					console.warn(`Warning: Could not delete file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+				}
+			}, 500); // 500мс задержка
+		} else {
+			console.log(`File not found, skipping delete: ${filePath}`);
+		}
+	} catch (error) {
+		console.warn(`Warning: Error checking file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+	}
+}
+
 async function sendProcessingResult(chatId: number, result: ProcessingResult, originalFileName: string): Promise<void> {
 	if (result.success && result.data) {
 		// Нормализуем данные для имени файла
@@ -203,9 +228,9 @@ async function sendProcessingResult(chatId: number, result: ProcessingResult, or
 			caption: 'Результат обработки в формате Excel',
 		});
 
-		// Удаляем временные файлы
-		fs.unlinkSync(jsonFilePath);
-		fs.unlinkSync(xlsxFilePath);
+		// Удаляем временные файлы безопасным способом
+		safeDeleteFile(jsonFilePath);
+		safeDeleteFile(xlsxFilePath);
 		console.log(`Successfully processed document for chat ${chatId}`);
 	} else {
 		const errorMessage = `❌ Ошибка: ${result.error || 'Произошла неизвестная ошибка'}`;
@@ -298,9 +323,8 @@ function setupHandlers(): void {
 			// Send result
 			await sendProcessingResult(chatId, result, msg.document.file_name || 'document');
 
-			// Clean up
-			fs.unlinkSync(filePath);
-			console.log(`Cleaned up file: ${filePath}`);
+			// Clean up безопасным способом
+			safeDeleteFile(filePath);
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
 			bot.sendMessage(chatId, '❌ Ошибка обработки документа. Пожалуйста, попробуйте снова.');
@@ -367,9 +391,8 @@ function setupHandlers(): void {
 			// Send result
 			await sendProcessingResult(chatId, result, fileName);
 
-			// Clean up
-			fs.unlinkSync(filePath);
-			console.log(`Cleaned up file: ${filePath}`);
+			// Clean up безопасным способом
+			safeDeleteFile(filePath);
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
 			bot.sendMessage(chatId, '❌ Ошибка обработки фото. Пожалуйста, попробуйте снова.');
