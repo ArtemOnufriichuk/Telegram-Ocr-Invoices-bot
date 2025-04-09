@@ -12,7 +12,7 @@ let bot: TelegramBot;
 let isRunning = false;
 let restartAttempts = 0;
 const MAX_RESTART_ATTEMPTS = 5;
-const RESTART_COOLDOWN = 10000; // 10 секунд между перезапусками
+const BASE_RESTART_COOLDOWN = 5000; // Базовое время ожидания 5 секунд
 const RESET_ATTEMPTS_AFTER = 60000 * 5; // Сбросить счетчик попыток после 5 минут успешной работы
 
 async function downloadFile(filePath: string, destination: string): Promise<void> {
@@ -173,6 +173,16 @@ function safeDeleteFile(filePath: string): void {
 	}
 }
 
+/**
+ * Проверяет наличие директории и создает её, если она не существует
+ */
+function ensureDirectoryExists(directoryPath: string): void {
+	if (!fs.existsSync(directoryPath)) {
+		console.log(`Creating directory: ${directoryPath}`);
+		fs.mkdirSync(directoryPath, { recursive: true });
+	}
+}
+
 async function sendProcessingResult(chatId: number, result: ProcessingResult, originalFileName: string): Promise<void> {
 	if (result.success && result.data) {
 		// Нормализуем данные для имени файла
@@ -202,11 +212,21 @@ async function sendProcessingResult(chatId: number, result: ProcessingResult, or
 		const jsonFilePath = path.join(config.paths.uploads, jsonFileName);
 		const xlsxFilePath = path.join(config.paths.uploads, xlsxFileName);
 
+		// Проверяем и создаем директорию files, если она не существует
+		ensureDirectoryExists(config.paths.files);
+
+		// Путь для сохранения JSON-файла в папку files
+		const jsonSavePath = path.join(config.paths.files, jsonFileName);
+
 		// Сохраняем JSON в файл
 		fs.writeFileSync(jsonFilePath, JSON.stringify(result.data, null, 2));
 
-		// Создаем Excel файл
+		// Создаем Excel файл в папке uploads (для отправки)
 		createExcelFile(result.data, xlsxFilePath);
+
+		// Создаем копию JSON файла в папке files (для сохранения)
+		fs.copyFileSync(jsonFilePath, jsonSavePath);
+		console.log(`JSON file saved to persistent storage: ${jsonSavePath}`);
 
 		// Отправляем сообщение с результатом
 		const messageSummary =
@@ -423,6 +443,11 @@ function stopBot(): void {
  */
 function initializeBot(): void {
 	try {
+		// Проверяем и создаем необходимые директории
+		ensureDirectoryExists(config.paths.uploads);
+		ensureDirectoryExists(config.paths.files);
+		console.log(`Directories initialized: uploads=${config.paths.uploads}, files=${config.paths.files}`);
+
 		// Создаем нового бота
 		bot = new TelegramBot(config.telegram.token, { polling: true });
 
@@ -430,10 +455,54 @@ function initializeBot(): void {
 		bot.on('polling_error', (error) => {
 			console.error('Telegram bot polling error:', error);
 
-			// Если ошибка критическая, перезапускаем бота
-			if (error && typeof error === 'object' && 'code' in error && (error.code === 'ETELEGRAM' || error.code === 'EFATAL')) {
-				console.log('Critical polling error detected, restarting bot...');
+			// Более детальная классификация ошибок
+			if (error && typeof error === 'object') {
+				if ('code' in error) {
+					// Критические ошибки API, требующие рестарта
+					if (error.code === 'ETELEGRAM' || error.code === 'EFATAL') {
+						console.log('Critical Telegram API error detected, restarting bot...');
+						restartBot();
+						return;
+					}
+
+					// Ошибки сети и временные проблемы - бот сам должен восстановиться
+					if (error.code === 'ECONNRESET' || error.code === 'ETIMEDOUT' || error.code === 'ESOCKETTIMEDOUT') {
+						console.log('Network error detected, bot should recover automatically...');
+						return;
+					}
+				}
+
+				// Проверяем сообщение об ошибке для более детальной обработки
+				if ('message' in error && typeof error.message === 'string') {
+					// Ошибки авторизации и неверного токена
+					if (error.message.includes('unauthorized') || error.message.includes('not found')) {
+						console.error('Authorization error detected. Check your bot token!');
+						return;
+					}
+
+					// Ошибки превышения лимитов API
+					if (error.message.includes('Too Many Requests') || error.message.includes('retry after')) {
+						console.log('Rate limit exceeded. Bot will retry automatically...');
+						return;
+					}
+				}
+			}
+
+			// Для неклассифицированных ошибок перезапускаем только при повторении
+			if (restartAttempts > 0) {
+				console.log('Recurring errors detected, attempting restart...');
 				restartBot();
+			} else {
+				// Счетчик для отслеживания повторяющихся ошибок
+				restartAttempts++;
+
+				// Сбрасываем счетчик через минуту, если больше ошибок нет
+				setTimeout(() => {
+					if (restartAttempts === 1) {
+						restartAttempts = 0;
+						console.log('No recurring errors detected, reset counter.');
+					}
+				}, 60000);
 			}
 		});
 
@@ -464,6 +533,10 @@ function restartBot(): void {
 	// Останавливаем старого бота, если он существует
 	stopBot();
 
+	// Экспоненциальный бэкофф: увеличиваем время ожидания с каждой попыткой
+	const cooldownTime = BASE_RESTART_COOLDOWN * Math.pow(2, restartAttempts - 1);
+	console.log(`Waiting ${cooldownTime / 1000} seconds before restart...`);
+
 	// Ждем некоторое время перед перезапуском
 	setTimeout(() => {
 		try {
@@ -482,7 +555,7 @@ function restartBot(): void {
 			// Рекурсивный вызов для следующей попытки
 			restartBot();
 		}
-	}, RESTART_COOLDOWN);
+	}, cooldownTime);
 }
 
 /**

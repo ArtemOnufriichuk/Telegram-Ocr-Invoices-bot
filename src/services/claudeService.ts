@@ -9,7 +9,7 @@ import sharp from 'sharp';
 
 // Инициализация клиента Anthropic
 const anthropic = new Anthropic({
-    apiKey: config.claude.apiKey,
+	apiKey: config.claude.apiKey,
 });
 
 // Базовый промт для обработки документов
@@ -140,30 +140,25 @@ total_with_pdv — итоговая сумма с ПДВ. /11000/
  * Преобразует изображение в формат и размер, подходящий для отправки в API Claude
  * Claude может принимать изображения размером до 5MB
  * @param filePath Путь к исходному файлу изображения
- * @returns Buffer с оптимизированным изображением 
+ * @returns Buffer с оптимизированным изображением
  */
 async function prepareImageForClaude(filePath: string): Promise<Buffer> {
-    try {
-        const image = sharp(filePath);
-        const metadata = await image.metadata();
-        
-        // Если изображение слишком большое, уменьшаем его
-        if ((metadata.width && metadata.width > 1500) || (metadata.height && metadata.height > 1500)) {
-            return await image
-                .resize(1500, 1500, { fit: 'inside', withoutEnlargement: true })
-                .jpeg({ quality: 80 })
-                .toBuffer();
-        }
-        
-        // Иначе просто оптимизируем формат и качество
-        return await image
-            .jpeg({ quality: 85 })
-            .toBuffer();
-    } catch (error) {
-        console.error('Error preparing image:', error);
-        // Если что-то пошло не так, возвращаем исходный файл
-        return fs.readFileSync(filePath);
-    }
+	try {
+		const image = sharp(filePath);
+		const metadata = await image.metadata();
+
+		// Если изображение слишком большое, уменьшаем его
+		if ((metadata.width && metadata.width > 1500) || (metadata.height && metadata.height > 1500)) {
+			return await image.resize(1500, 1500, { fit: 'inside', withoutEnlargement: true }).jpeg({ quality: 80 }).toBuffer();
+		}
+
+		// Иначе просто оптимизируем формат и качество
+		return await image.jpeg({ quality: 85 }).toBuffer();
+	} catch (error) {
+		console.error('Error preparing image:', error);
+		// Если что-то пошло не так, возвращаем исходный файл
+		return fs.readFileSync(filePath);
+	}
 }
 
 /**
@@ -171,19 +166,19 @@ async function prepareImageForClaude(filePath: string): Promise<Buffer> {
  * @param filePath Путь к PDF файлу
  * @returns Извлеченный текст и метаданные
  */
-async function extractTextFromPdf(filePath: string): Promise<{ text: string, pageCount: number }> {
-    try {
-        const dataBuffer = fs.readFileSync(filePath);
-        const pdfData = await pdfParse(dataBuffer);
-        
-        return {
-            text: pdfData.text,
-            pageCount: pdfData.numpages
-        };
-    } catch (error) {
-        console.error('Error extracting text from PDF:', error);
-        throw new Error('Failed to extract text from PDF');
-    }
+async function extractTextFromPdf(filePath: string): Promise<{ text: string; pageCount: number }> {
+	try {
+		const dataBuffer = fs.readFileSync(filePath);
+		const pdfData = await pdfParse(dataBuffer);
+
+		return {
+			text: pdfData.text,
+			pageCount: pdfData.numpages,
+		};
+	} catch (error) {
+		console.error('Error extracting text from PDF:', error);
+		throw new Error('Failed to extract text from PDF');
+	}
 }
 
 /**
@@ -192,37 +187,37 @@ async function extractTextFromPdf(filePath: string): Promise<{ text: string, pag
  * @returns Извлеченный текст в виде строки
  */
 async function extractTextFromExcel(filePath: string): Promise<string> {
-    try {
-        // Загружаем книгу Excel
-        const workbook = XLSX.readFile(filePath);
-        
-        let extractedText = '';
-        
-        // Обрабатываем каждый лист
-        for (const sheetName of workbook.SheetNames) {
-            const worksheet = workbook.Sheets[sheetName];
-            
-            // Добавляем имя листа
-            extractedText += `=== Лист: ${sheetName} ===\n`;
-            
-            // Конвертируем лист в JSON
-            const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-            
-            // Преобразуем данные в текст
-            for (const row of jsonData) {
-                if (Array.isArray(row) && row.length > 0) {
-                    extractedText += row.map(cell => cell !== undefined && cell !== null ? cell.toString() : '').join('\t') + '\n';
-                }
-            }
-            
-            extractedText += '\n';
-        }
-        
-        return extractedText;
-    } catch (error) {
-        console.error('Error extracting text from Excel:', error);
-        throw new Error('Failed to extract text from Excel');
-    }
+	try {
+		// Загружаем книгу Excel
+		const workbook = XLSX.readFile(filePath);
+
+		let extractedText = '';
+
+		// Обрабатываем каждый лист
+		for (const sheetName of workbook.SheetNames) {
+			const worksheet = workbook.Sheets[sheetName];
+
+			// Добавляем имя листа
+			extractedText += `=== Лист: ${sheetName} ===\n`;
+
+			// Конвертируем лист в JSON
+			const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+
+			// Преобразуем данные в текст
+			for (const row of jsonData) {
+				if (Array.isArray(row) && row.length > 0) {
+					extractedText += row.map((cell) => (cell !== undefined && cell !== null ? cell.toString() : '')).join('\t') + '\n';
+				}
+			}
+
+			extractedText += '\n';
+		}
+
+		return extractedText;
+	} catch (error) {
+		console.error('Error extracting text from Excel:', error);
+		throw new Error('Failed to extract text from Excel');
+	}
 }
 
 /**
@@ -230,36 +225,36 @@ async function extractTextFromExcel(filePath: string): Promise<string> {
  * @param filePath Путь к файлу
  * @returns Объект с типом медиа и обработанными данными
  */
-async function prepareMediaForClaude(filePath: string): Promise<{ 
-    mediaType: 'image' | 'pdf' | 'excel' | 'unknown', 
-    content: Buffer | string 
+async function prepareMediaForClaude(filePath: string): Promise<{
+	mediaType: 'image' | 'pdf' | 'excel' | 'unknown';
+	content: Buffer | string;
 }> {
-    const extension = path.extname(filePath).toLowerCase();
-    
-    // Обработка изображений
-    if (['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(extension)) {
-        const optimizedImage = await prepareImageForClaude(filePath);
-        return { mediaType: 'image', content: optimizedImage };
-    }
-    
-    // Обработка PDF
-    else if (extension === '.pdf') {
-        const { text, pageCount } = await extractTextFromPdf(filePath);
-        const formattedText = `=== PDF документ (${pageCount} страниц) ===\n\n${text}`;
-        return { mediaType: 'pdf', content: formattedText };
-    }
-    
-    // Обработка Excel
-    else if (['.xls', '.xlsx', '.csv'].includes(extension)) {
-        const text = await extractTextFromExcel(filePath);
-        const formattedText = `=== Excel документ ===\n\n${text}`;
-        return { mediaType: 'excel', content: formattedText };
-    }
-    
-    // Неизвестный формат
-    else {
-        throw new Error(`Unsupported file format: ${extension}`);
-    }
+	const extension = path.extname(filePath).toLowerCase();
+
+	// Обработка изображений
+	if (['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(extension)) {
+		const optimizedImage = await prepareImageForClaude(filePath);
+		return { mediaType: 'image', content: optimizedImage };
+	}
+
+	// Обработка PDF
+	else if (extension === '.pdf') {
+		const { text, pageCount } = await extractTextFromPdf(filePath);
+		const formattedText = `=== PDF документ (${pageCount} страниц) ===\n\n${text}`;
+		return { mediaType: 'pdf', content: formattedText };
+	}
+
+	// Обработка Excel
+	else if (['.xls', '.xlsx', '.csv'].includes(extension)) {
+		const text = await extractTextFromExcel(filePath);
+		const formattedText = `=== Excel документ ===\n\n${text}`;
+		return { mediaType: 'excel', content: formattedText };
+	}
+
+	// Неизвестный формат
+	else {
+		throw new Error(`Unsupported file format: ${extension}`);
+	}
 }
 
 /**
@@ -269,113 +264,110 @@ async function prepareMediaForClaude(filePath: string): Promise<{
  * @param originalFilePath Исходный путь в Telegram (опционально)
  * @returns Результат обработки с извлеченными данными
  */
-export async function processDocumentWithFlexibleExtraction(
-    filePath: string,
-    originalFilePath?: string
-): Promise<ProcessingResult> {
-    try {
-        console.log(`Processing document with Claude API: ${filePath}`);
-        const extension = path.extname(filePath).toLowerCase();
-        
-        // Подготавливаем медиа для Claude
-        const { mediaType, content } = await prepareMediaForClaude(filePath);
-        
-        let response;
-        
-        // В зависимости от типа медиа, формируем и отправляем запрос к Claude API
-        if (mediaType === 'image') {
-            // Конвертируем Buffer в base64
-            const base64Image = (content as Buffer).toString('base64');
-            
-            // Отправляем запрос к Claude для анализа изображения
-            response = await anthropic.messages.create({
-                model: config.claude.model || 'claude-3-5-sonnet-20240620',
-                max_tokens: config.claude.maxTokens || 4000,
-                system: "You are an expert document and invoice analyzer. Extract all information accurately.",
-                messages: [
-                    {
-                        role: "user",
-                        content: [
-                            { type: "text", text: BASE_PROMPT },
-                            {
-                                type: "image",
-                                source: {
-                                    type: "base64",
-                                    media_type: "image/jpeg",
-                                    data: base64Image
-                                }
-                            }
-                        ]
-                    }
-                ]
-            });
-        } else {
-            // Для PDF и Excel файлов отправляем извлеченный текст
-            const pageContent = content as string;
-            const documentText = `${BASE_PROMPT}\n\nВот содержание документа:${
-                extension === '.xls' || extension === '.xlsx' ? '\nЭто данные, извлеченные из Excel файла в текстовом формате.' : ''
-            }\n\n${pageContent}`;
-            
-            response = await anthropic.messages.create({
-                model: config.claude.model || 'claude-3-5-sonnet-20240620',
-                max_tokens: config.claude.maxTokens || 4000,
-                system: "You are an expert document and invoice analyzer. Extract all information accurately.",
-                messages: [
-                    {
-                        role: "user",
-                        content: documentText
-                    }
-                ]
-            });
-        }
-        
-        // Обрабатываем ответ
-        if (response.content && response.content.length > 0) {
-            const responseContent = response.content[0];
-            // Проверяем, что блок имеет тип text
-            if ('text' in responseContent) {
-                const text = responseContent.text;
-                
-                // Ищем JSON в ответе
-                const jsonMatch = text.match(/\{[\s\S]*\}/);
-                
-                if (jsonMatch) {
-                    try {
-                        const parsedData = JSON.parse(jsonMatch[0]) as ParsedDocument;
-                        return {
-                            success: true,
-                            data: parsedData
-                        };
-                    } catch (jsonError) {
-                        console.error('Error parsing JSON from Claude response:', jsonError);
-                        return {
-                            success: false,
-                            error: 'Failed to parse extracted data from Claude response.'
-                        };
-                    }
-                } else {
-                    return {
-                        success: false,
-                        error: 'Claude did not return valid JSON data.'
-                    };
-                }
-            } else {
-                return {
-                    success: false,
-                    error: 'Claude API returned an unsupported content type.'
-                };
-            }
-        } else {
-            return {
-                success: false,
-                error: 'Claude API returned an empty response.'
-            };
-        }
-    } catch (error) {
-        console.error('Error in Claude API processing:', error);
-        return {
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error in Claude processing'
-        };
-    }
+export async function processDocumentWithFlexibleExtraction(filePath: string, originalFilePath?: string): Promise<ProcessingResult> {
+	try {
+		console.log(`Processing document with Claude API: ${filePath}`);
+		const extension = path.extname(filePath).toLowerCase();
+
+		// Подготавливаем медиа для Claude
+		const { mediaType, content } = await prepareMediaForClaude(filePath);
+
+		let response;
+
+		// В зависимости от типа медиа, формируем и отправляем запрос к Claude API
+		if (mediaType === 'image') {
+			// Конвертируем Buffer в base64
+			const base64Image = (content as Buffer).toString('base64');
+
+			// Отправляем запрос к Claude для анализа изображения
+			response = await anthropic.messages.create({
+				model: config.claude.model || 'claude-3-7-sonnet-20250219',
+				max_tokens: config.claude.maxTokens || 4000,
+				system: 'You are an expert document and invoice analyzer. Extract all information accurately.',
+				messages: [
+					{
+						role: 'user',
+						content: [
+							{ type: 'text', text: BASE_PROMPT },
+							{
+								type: 'image',
+								source: {
+									type: 'base64',
+									media_type: 'image/jpeg',
+									data: base64Image,
+								},
+							},
+						],
+					},
+				],
+			});
+		} else {
+			// Для PDF и Excel файлов отправляем извлеченный текст
+			const pageContent = content as string;
+			const documentText = `${BASE_PROMPT}\n\nВот содержание документа:${
+				extension === '.xls' || extension === '.xlsx' ? '\nЭто данные, извлеченные из Excel файла в текстовом формате.' : ''
+			}\n\n${pageContent}`;
+
+			response = await anthropic.messages.create({
+				model: config.claude.model || 'claude-3-7-sonnet-20250219',
+				max_tokens: config.claude.maxTokens || 4000,
+				system: 'You are an expert document and invoice analyzer. Extract all information accurately.',
+				messages: [
+					{
+						role: 'user',
+						content: documentText,
+					},
+				],
+			});
+		}
+
+		// Обрабатываем ответ
+		if (response.content && response.content.length > 0) {
+			const responseContent = response.content[0];
+			// Проверяем, что блок имеет тип text
+			if ('text' in responseContent) {
+				const text = responseContent.text;
+
+				// Ищем JSON в ответе
+				const jsonMatch = text.match(/\{[\s\S]*\}/);
+
+				if (jsonMatch) {
+					try {
+						const parsedData = JSON.parse(jsonMatch[0]) as ParsedDocument;
+						return {
+							success: true,
+							data: parsedData,
+						};
+					} catch (jsonError) {
+						console.error('Error parsing JSON from Claude response:', jsonError);
+						return {
+							success: false,
+							error: 'Failed to parse extracted data from Claude response.',
+						};
+					}
+				} else {
+					return {
+						success: false,
+						error: 'Claude did not return valid JSON data.',
+					};
+				}
+			} else {
+				return {
+					success: false,
+					error: 'Claude API returned an unsupported content type.',
+				};
+			}
+		} else {
+			return {
+				success: false,
+				error: 'Claude API returned an empty response.',
+			};
+		}
+	} catch (error) {
+		console.error('Error in Claude API processing:', error);
+		return {
+			success: false,
+			error: error instanceof Error ? error.message : 'Unknown error in Claude processing',
+		};
+	}
 }

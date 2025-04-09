@@ -39,5 +39,6 @@ export interface Config {
 	};
 	paths: {
 		uploads: string;
+		files: string;
 	};
 }
