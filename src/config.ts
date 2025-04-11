@@ -26,4 +26,11 @@ export const config: Config = {
 		uploads: path.resolve(__dirname, '../uploads'),
 		files: path.resolve(__dirname, '../../files'),
 	},
+	claudeApiStatus: {
+		isHealthy: true,
+		lastErrorTime: 0,
+		cooldownPeriod: 60000, // 1 минута охлаждения при ошибках
+		consecutiveErrors: 0,
+	},
+	maxParallelRequests: 3, // максимум параллельных запросов к API
 };

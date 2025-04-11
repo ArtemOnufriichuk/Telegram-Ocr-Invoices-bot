@@ -12,6 +12,9 @@ const anthropic = new Anthropic({
 	apiKey: config.claude.apiKey,
 });
 
+// Глобальная переменная для отслеживания числа активных запросов
+let activeRequests = 0;
+
 // Базовый промт для обработки документов
 const BASE_PROMPT = `
 Пожалуйста, прочитай текст ниже. Он может содержать несколько языков (укр, рус, англ), в документе может быть пометка о наличии цены с ПДВ (НДС) или без. Определи в нём следующие данные:
@@ -265,6 +268,35 @@ async function prepareMediaForClaude(filePath: string): Promise<{
  * @returns Результат обработки с извлеченными данными
  */
 export async function processDocumentWithFlexibleExtraction(filePath: string, originalFilePath?: string): Promise<ProcessingResult> {
+	// Максимальное количество повторных попыток при ошибке
+	const maxRetries = 3;
+	let retryCount = 0;
+	let retryDelay = 5000; // начальная задержка 5 секунд
+
+	// Проверка статуса API перед запросом
+	if (config.claudeApiStatus && !config.claudeApiStatus.isHealthy) {
+		const timeSinceError = Date.now() - config.claudeApiStatus.lastErrorTime;
+		if (timeSinceError < config.claudeApiStatus.cooldownPeriod) {
+			console.log(`Claude API в режиме охлаждения. Подождите ${Math.ceil((config.claudeApiStatus.cooldownPeriod - timeSinceError) / 1000)} секунд.`);
+			return {
+				success: false,
+				error: `API Claude временно недоступно. Повторите запрос через ${Math.ceil((config.claudeApiStatus.cooldownPeriod - timeSinceError) / 1000)} секунд.`,
+			};
+		}
+		// Сбрасываем статус
+		config.claudeApiStatus.isHealthy = true;
+		config.claudeApiStatus.consecutiveErrors = 0;
+	}
+
+	// Контроль за количеством параллельных запросов
+	while (activeRequests >= (config.maxParallelRequests || 3)) {
+		console.log(`Достигнут лимит параллельных запросов (${config.maxParallelRequests || 3}). Ожидание...`);
+		await new Promise((resolve) => setTimeout(resolve, 1000));
+	}
+
+	// Увеличиваем счетчик активных запросов
+	activeRequests++;
+
 	try {
 		console.log(`Processing document with Claude API: ${filePath}`);
 		const extension = path.extname(filePath).toLowerCase();
@@ -272,54 +304,114 @@ export async function processDocumentWithFlexibleExtraction(filePath: string, or
 		// Подготавливаем медиа для Claude
 		const { mediaType, content } = await prepareMediaForClaude(filePath);
 
-		let response;
+		// Функция для выполнения запроса с механизмом повторных попыток
+		async function makeRequestWithRetry(): Promise<Anthropic.Message> {
+			try {
+				// В зависимости от типа медиа, формируем и отправляем запрос к Claude API
+				if (mediaType === 'image') {
+					// Конвертируем Buffer в base64
+					const base64Image = (content as Buffer).toString('base64');
 
-		// В зависимости от типа медиа, формируем и отправляем запрос к Claude API
-		if (mediaType === 'image') {
-			// Конвертируем Buffer в base64
-			const base64Image = (content as Buffer).toString('base64');
-
-			// Отправляем запрос к Claude для анализа изображения
-			response = await anthropic.messages.create({
-				model: config.claude.model || 'claude-3-7-sonnet-20250219',
-				max_tokens: config.claude.maxTokens || 4000,
-				system: 'You are an expert document and invoice analyzer. Extract all information accurately.',
-				messages: [
-					{
-						role: 'user',
-						content: [
-							{ type: 'text', text: BASE_PROMPT },
+					// Отправляем запрос к Claude для анализа изображения
+					return await anthropic.messages.create({
+						model: config.claude.model || 'claude-3-7-sonnet-20250219',
+						max_tokens: config.claude.maxTokens || 4000,
+						system: 'You are an expert document and invoice analyzer. Extract all information accurately.',
+						messages: [
 							{
-								type: 'image',
-								source: {
-									type: 'base64',
-									media_type: 'image/jpeg',
-									data: base64Image,
-								},
+								role: 'user',
+								content: [
+									{ type: 'text', text: BASE_PROMPT },
+									{
+										type: 'image',
+										source: {
+											type: 'base64',
+											media_type: 'image/jpeg',
+											data: base64Image,
+										},
+									},
+								],
 							},
 						],
-					},
-				],
-			});
-		} else {
-			// Для PDF и Excel файлов отправляем извлеченный текст
-			const pageContent = content as string;
-			const documentText = `${BASE_PROMPT}\n\nВот содержание документа:${
-				extension === '.xls' || extension === '.xlsx' ? '\nЭто данные, извлеченные из Excel файла в текстовом формате.' : ''
-			}\n\n${pageContent}`;
+					});
+				} else {
+					// Для PDF и Excel файлов отправляем извлеченный текст
+					const pageContent = content as string;
+					const documentText = `${BASE_PROMPT}\n\nВот содержание документа:${
+						extension === '.xls' || extension === '.xlsx' ? '\nЭто данные, извлеченные из Excel файла в текстовом формате.' : ''
+					}\n\n${pageContent}`;
 
-			response = await anthropic.messages.create({
-				model: config.claude.model || 'claude-3-7-sonnet-20250219',
-				max_tokens: config.claude.maxTokens || 4000,
-				system: 'You are an expert document and invoice analyzer. Extract all information accurately.',
-				messages: [
-					{
-						role: 'user',
-						content: documentText,
-					},
-				],
-			});
+					return await anthropic.messages.create({
+						model: config.claude.model || 'claude-3-7-sonnet-20250219',
+						max_tokens: config.claude.maxTokens || 4000,
+						system: 'You are an expert document and invoice analyzer. Extract all information accurately.',
+						messages: [
+							{
+								role: 'user',
+								content: documentText,
+							},
+						],
+					});
+				}
+			} catch (error: any) {
+				// Обработка ошибок API Claude
+				if ((error.status === 529 || error.status === 429) && retryCount < maxRetries) {
+					retryCount++;
+					console.log(`Получена ошибка API ${error.status}, повторная попытка ${retryCount}/${maxRetries} через ${retryDelay / 1000}с`);
+
+					// Обновляем статус API
+					config.claudeApiStatus.consecutiveErrors++;
+
+					// Если это ошибка лимита, используем Retry-After из заголовка
+					if (error.status === 429 && error.headers && error.headers['retry-after']) {
+						const retryAfterHeader = error.headers['retry-after'];
+						let retryAfter;
+
+						try {
+							retryAfter = parseInt(retryAfterHeader) * 1000;
+							if (isNaN(retryAfter) || retryAfter <= 0) {
+								retryAfter = retryDelay;
+								console.warn(`Invalid retry-after header: ${retryAfterHeader}, using default delay: ${retryDelay}ms`);
+							}
+						} catch (parseError) {
+							retryAfter = retryDelay;
+							console.warn(`Error parsing retry-after header: ${retryAfterHeader}, using default delay: ${retryDelay}ms`);
+						}
+
+						console.log(`Waiting ${retryAfter / 1000}s as specified in retry-after header`);
+						await new Promise((resolve) => setTimeout(resolve, retryAfter));
+					} else {
+						await new Promise((resolve) => setTimeout(resolve, retryDelay));
+						retryDelay *= 2; // Увеличиваем задержку в 2 раза
+					}
+
+					// Если более 3 ошибок подряд, помечаем API как недоступный
+					if (config.claudeApiStatus.consecutiveErrors >= 3) {
+						config.claudeApiStatus.isHealthy = false;
+						config.claudeApiStatus.lastErrorTime = Date.now();
+						console.log(`Claude API помечен как недоступный. Режим охлаждения на ${config.claudeApiStatus.cooldownPeriod / 1000} секунд.`);
+					}
+
+					return await makeRequestWithRetry();
+				}
+
+				// Если превышено максимальное количество попыток или другая ошибка
+				// Обновляем статус API
+				config.claudeApiStatus.consecutiveErrors++;
+				if (config.claudeApiStatus.consecutiveErrors >= 3) {
+					config.claudeApiStatus.isHealthy = false;
+					config.claudeApiStatus.lastErrorTime = Date.now();
+				}
+
+				throw error;
+			}
 		}
+
+		// Выполняем запрос с механизмом повторных попыток
+		const response = await makeRequestWithRetry();
+
+		// Сбрасываем счетчик ошибок при успешном запросе
+		config.claudeApiStatus.consecutiveErrors = 0;
 
 		// Обрабатываем ответ
 		if (response.content && response.content.length > 0) {
@@ -369,5 +461,8 @@ export async function processDocumentWithFlexibleExtraction(filePath: string, or
 			success: false,
 			error: error instanceof Error ? error.message : 'Unknown error in Claude processing',
 		};
+	} finally {
+		// Уменьшаем счетчик активных запросов в любом случае
+		activeRequests = Math.max(0, activeRequests - 1); // Защита от отрицательных значений
 	}
 }

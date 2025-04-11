@@ -153,24 +153,66 @@ function normalizeFileName(fileName: string): string {
  * Предотвращает ошибки EPERM при удалении файлов, которые всё ещё используются
  */
 function safeDeleteFile(filePath: string): void {
-	try {
-		// Проверяем существование файла перед удалением
-		if (fs.existsSync(filePath)) {
-			// Добавляем небольшую задержку для завершения всех операций с файлом
-			setTimeout(() => {
+	if (!filePath || typeof filePath !== 'string' || filePath.trim() === '') {
+		console.warn('Invalid file path provided to safeDeleteFile');
+		return;
+	}
+
+	const maxRetries = 3;
+	let retryCount = 0;
+	let retryDelay = 1000; // начальная задержка 1 секунда
+
+	// Функция для попытки удаления файла с повторными попытками
+	const attemptDelete = () => {
+		try {
+			// Проверяем существование файла перед удалением
+			if (fs.existsSync(filePath)) {
 				try {
 					fs.unlinkSync(filePath);
 					console.log(`Cleaned up file: ${filePath}`);
 				} catch (error) {
 					console.warn(`Warning: Could not delete file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+
+					// Если файл занят, пробуем снова через некоторое время
+					if (retryCount < maxRetries) {
+						retryCount++;
+						console.log(`Retrying delete (${retryCount}/${maxRetries}) after ${retryDelay}ms: ${filePath}`);
+
+						setTimeout(() => {
+							attemptDelete();
+						}, retryDelay);
+
+						// Увеличиваем задержку экспоненциально
+						retryDelay *= 2;
+					} else {
+						// Проверяем существование файла перед добавлением в очередь
+						if (fs.existsSync(filePath)) {
+							console.log(`Adding to delayed cleanup queue: ${filePath}`);
+							setTimeout(() => {
+								try {
+									if (fs.existsSync(filePath)) {
+										fs.unlinkSync(filePath);
+										console.log(`Delayed cleanup successful: ${filePath}`);
+									}
+								} catch (e) {
+									console.error(`Failed final cleanup attempt: ${filePath}`);
+								}
+							}, 30000); // Пробуем последний раз через 30 секунд
+						}
+					}
 				}
-			}, 500); // 500мс задержка
-		} else {
-			console.log(`File not found, skipping delete: ${filePath}`);
+			} else {
+				console.log(`File not found, skipping delete: ${filePath}`);
+			}
+		} catch (error) {
+			console.warn(`Warning: Error checking file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
 		}
-	} catch (error) {
-		console.warn(`Warning: Error checking file ${filePath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-	}
+	};
+
+	// Начинаем с небольшой задержки для завершения всех операций с файлом
+	setTimeout(() => {
+		attemptDelete();
+	}, 500);
 }
 
 /**

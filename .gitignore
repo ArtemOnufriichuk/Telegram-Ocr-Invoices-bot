@@ -43,3 +43,9 @@ temp/
 # Uploaded files
 /uploads/*
 !/uploads/.gitkeep 
+
+# Coverage
+coverage/
+
+# Memory files
+memory-bank/

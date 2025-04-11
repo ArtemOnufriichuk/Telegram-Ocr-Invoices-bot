@@ -28,6 +28,13 @@ export interface ProcessingResult {
 	error?: string;
 }
 
+export interface ClaudeApiStatus {
+	isHealthy: boolean;
+	lastErrorTime: number;
+	cooldownPeriod: number;
+	consecutiveErrors: number;
+}
+
 export interface Config {
 	telegram: {
 		token: string;
@@ -41,4 +48,6 @@ export interface Config {
 		uploads: string;
 		files: string;
 	};
+	claudeApiStatus: ClaudeApiStatus;
+	maxParallelRequests: number;
 }
